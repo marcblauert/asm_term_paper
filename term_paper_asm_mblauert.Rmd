@@ -1,0 +1,528 @@
+---
+title: 'Topic 3: Ordinary Differential Equations'
+author: "Marc Blauert"
+date: '2021-09-24'
+output:
+  html_document:
+    theme: default
+    highlight: haddock
+    toc: yes
+    number_sections: yes
+    toc_float:
+      collapsed: yes
+      smooth_scroll: yes
+  pdf_document:
+    toc: yes
+subtitle: Term Paper in Applied Statistical Modelling (SoSe 2021)
+---
+
+```{=html}
+<style>
+body {
+text-align: justify}
+</style>
+```
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_knit$set(dirname(rstudioapi::getSourceEditorContext()$path))
+
+rm(list = ls())
+setwd(dirname(rstudioapi::getSourceEditorContext()$path))
+```
+
+<br> **Setup:**
+
+```{r packages}
+# packages used
+pacman::p_load(tidyverse, brms, rethinking, bayesplot, tidybayes, 
+               RColorBrewer, hrbrthemes, patchwork, rcartocolor)
+
+# set color scheme for bayesplots
+color_scheme_set("green")
+```
+
+<br>
+
+# Reflection of Chapter 16
+
+The main message that Chapter 16 seeks to convey, in my view, is that one may go beyond the default use of generalized linear models (GLMs) and instead use one's domain-specific scientific knowledge of a particular process to build more sophisticated and informed custom statistical models. This approach contrasts with the standard approach of many scientific analyses, where one has only a vague idea of the relationships and interactions between variables.
+
+Personally, I found the first and third examples in the chapters "Geocentric people" and "Ordinary differential nut cracking" particularly compelling because all the steps used to construct the scientific model seemed intuitive to me - and therefore probably leave that impression on a wide range of readers. I believe that the self-construction of an individual statistical model, as McElreath does for these two examples, has a more profound effect than simply establishing a better-fitting model. By setting up the model equation step-by-step, he makes the statistical model understandable and intuitive to his readers - an aspect whose importance, I think, cannot be overstated. For good science, a model must be accessible to the reader. It must be structured in such a way that it does not remain a black box which is neither questioned nor understood.
+
+That is one side of the coin; the other is that the chapter also makes clear how complex the undertaking of specifying one's own statistical model is. What seems intuitive and easy to design when it is already established is certainly not so easy to construct yourself. Throughout the book, we have worked with many model examples where using a standard approach that accounts for underlying processes and relationships by specifying priors and likelihoods has resulted in well-fitting and informative statistical models. As McElreath himself says, "In combination with a logic of causal inference, for example DAGs and do-calculus, generalized linear models can nevertheless be unreasonably powerful." (p. 525). For my future modeling work, I will certainly keep the chapter's aspiration in mind and actively address the questions of what processes underlie the model. And whether there is a simple mathematical way to represent these relationships that may be better than simply adding up linear terms.
+
+# The Panda Nuts Model
+
+Prior to turning to the two tasks 16H1 (Section 3) and 16H2 (Section 4), it appears a useful intermediate step to recapitulate the scientific considerations underlying the model on panda nuts cracking by chimpanzees described by McElreath in Section 16.3 of his book.[^1] First, the scientific model will be presented. Thereinafter, the statistical model and its implementation in `brms` will be described. I will call the brms-version of the model from the chapter base model (`b16.4`).
+
+[^1]: There seems to be a mistake in the numbering of the model in McElreath's book. For consistency, I will also use the .4 and not .3 as it is done in the book as well as in the brms-bookdown.
+
+## Scientific Model
+
+While it is common for humans to crack open the firmly sealed panda nuts though the use of tools, doing so is not common for most animals species. Yet, chimpanzees also succeed in opening the nuts by going down the same road as humans do: They use hammer-like tools. This ability of chimpanzees and the question which factors predict whether a chimpanzee is able to open panda nuts constitute the starting point for the model. Aside from general curiosity, analyzing the factors that contribute to chimpanzees' ability to crack panda nuts could lead to a better understanding of tool use in primate species, which in turn could tell us something about our own human evolution as a species that uses tools all the time.
+
+To begin with, McElreath hypothesises that a chimpanzee's individual strength is the most important factor in their ability to open panda nuts. Since there is no explicit measure of chimpanzee strength in the data set, he instead uses the given variable `age` as an approximation for strength. The logic goes as follows: As a chimpanzee grows older, its body mass increases; and as its body size increases, its strength also increases. From this he derives the following differential equation:
+
+$$ \frac{dM}{dt} = k(M_\text{max}-M_t)$$
+
+where $M_\text{max}$ represents the maximum body mass of a chimpanzee, $M_t$ the body mass at the time index $t$ (age of a chimpanzee), and $k$ is a parameter that captures the change in ability level at different ages. This differential equation is than solved to the following solution:
+
+$$M_t = M_\text{max} (1 - \exp(-kt))$$ It provides an estimate for the expected body mass of a chimpanzee at age $t$. Yet, what is actually to be approximated is not body mass but the number of nuts opened through the individual strength of a chimpanzee. To adjust the model to this purpose, two additional steps are necessary. First, McElreath extends the model by adding the parameter $\beta$ which represents an assumed proportionality of body mass ($M$) and strength ($S$). So to move from $M_t$ to $S_t$ one has to multiply $M_t$ with $\beta$:
+
+$$S_t = M_t\beta = \beta M_\text{max} (1 - \exp(-kt))$$ Now the equation describes strength at a certain age ($S_t$). For the second step, to move from strength to the number of nuts opened, McElreath proposes to deviate from the simple proportionality and instead use an exponential factor since increasing strength has multiple increasing effects on the success rate of nut opening (able to lift heavier hammer, faster acceleration, and better levers). He therefore proposes the following model:
+
+$$\lambda = \alpha S_t^\theta = \alpha \big ( \beta M_\text{max} (1 - \exp(-kt) )  \big ) ^\theta$$ The outcome $\lambda$ is the rate of nuts opened. For the other side of the equation, two parameters are added: $\alpha$ is a parameter to relate strength and nut opening, and $\theta$ is the exponentially increasing factor in the relationship which is thus assumed to be greater than one.
+
+This equation, which represents the scientifically derived relationship between strength and number of panda nuts opened, is then simplified. First, McElreath assumes that $M_\text{max}$ is scaled to equal 1 (for the given data, this means that the maximum age of 16 equals 1):
+
+$$\lambda = \alpha \beta^\theta (1 - \exp(-kt) )^\theta$$ And second, he also merges the two multiplicative parameters $\alpha$ and $\beta^\theta$ into a single parameter $\phi$, leading to the following simplified and final scientific model:
+
+$$\lambda = \phi (1 - \exp(-kt))^\theta$$
+
+## Statistical Model
+
+To translate the scientific model into a statistical model, the likelihood function and the priors need to be determined.
+
+For the likelihood function, McElreath uses a Poisson distribution. In general, the Poisson distribution can be used to describe the probability of achieving $x$ successes in a given time interval when the total number of trials is unknown. The result is thus constrained to $x \geq 0$. In the given case, successes are represented by the number of nuts opened. A difference between the observations in the data set is the varying time interval over which the chimpanzees were observed. To level the playing field while assuming that success is proportional to the length of the observed time interval, the term `seconds_i` is added to the model. Additionally, the generic index $t$ is replaced by `age_i` of a chimpanzee and `n_i` is used to represent the number of nuts opened. With these adjustments, the likelihood function proposed by McElreath looks like this:
+
+```{=tex}
+\begin{align*}
+n_i & \sim \operatorname{Poisson}(\lambda_i) \\
+\lambda_i & = \text{seconds}_i \, \phi (1 - \exp(-k \,\text{age}_i))^\theta
+\end{align*}
+```
+For the priors, McElreath proposes the following:
+
+```{=tex}
+\begin{align*}
+\phi   & \sim \operatorname{Log-Normal}(\log 1, 0.10) \\
+k      & \sim \operatorname{Log-Normal}(\log 2, 0.25) \\
+\theta & \sim \operatorname{Log-Normal}(\log 5, 0.25)
+\end{align*}
+```
+The $k$ and $\theta$ priors influence the body mass part of the equation. To integrate real-world knowledge, they need to ensure a plateau once a chimpanzee reaches adulthood. According to McElreath, this happens around the age of 12 years. So the priors are designed to reflect this assumption. Furthermore, the $\phi$ prior is crucial to determine the translation from body mass to number of nuts opened per second. Here, McElreath proposes a prior that leads to a maximum of about one nut per second.
+
+## Base Model (b16.4)
+
+### Data preparation
+
+First, the raw dataset is adjusted to provide the information and metrics needed for the model. Please note that at this stage the variables `sex_dummy` and `id` are also already created, which will be relevant for the two exercises (Sections 3 and 4).
+
+```{r data}
+data(Panda_nuts, package = "rethinking")
+d <- Panda_nuts
+rm(Panda_nuts)
+
+d <-
+  d %>% 
+  mutate(n = nuts_opened,
+         n_per_sec = n/seconds,
+         age_s = age / max(age),
+         sex_dummy = as.integer(ifelse(sex == "f", 1, 0)), # for 16H1, see Section 3
+         id = as.factor(chimpanzee)) # for 16H2, see Section 4
+
+str(d)
+```
+
+### Model (b16.4)
+
+The base model from the book and its model results:
+
+```{=tex}
+\begin{align*}
+n_i & \sim \operatorname{Poisson}(\lambda_i) \\
+\lambda_i & = \text{seconds}_i \, \phi (1 - \exp(-k \,\text{age}_i))^\theta \\
+\phi   & \sim \operatorname{Log-Normal}(\log 1, 0.10) \\
+k      & \sim \operatorname{Log-Normal}(\log 2, 0.25) \\
+\theta & \sim \operatorname{Log-Normal}(\log 5, 0.25)
+\end{align*}
+```
+```{r base model}
+b16.4 <- 
+  brm(data = d,
+      family = poisson(link = identity),
+      bf(n ~ seconds * phi * (1 - exp(-k * age_s))^theta,
+         phi + k + theta ~ 1,
+         nl = T),
+      prior = c(prior(lognormal(log(1), 0.1), nlpar = phi, lb = 0),
+                prior(lognormal(log(2), 0.25), nlpar = k, lb = 0),
+                prior(lognormal(log(5), 0.25), nlpar = theta, lb = 0)),
+      iter = 4000, warmup = 2000, chains = 4, cores = 4,
+      seed = 16,
+      file = "fits/b16.04")
+
+summary(b16.4)
+```
+
+# Exercise 16H1
+
+------------------------------------------------------------------------
+
+**Task:** *Modify the Panda nut opening model (`b16.4`) so that male and female chimpanzees have different maximum adult body mass. The `sex` variable in `data(Panda_nuts)` provides the information you need. Be sure to incorporate the fact that you know, prior to seeing the data, that males are on average larger than females at maturity.*
+
+------------------------------------------------------------------------
+
+Starting from the base model `b16.4`, to differentiate between the male and female chimpanzees in the sample, I add the `sex` variable into the model. In Section 2.3.1 I have already added a `sex_dummy` to the data set which I will use. The dummy marks female chimpanzees with 1 and male chimpanzees with 0.
+
+## Priors
+
+First, I turn to the priors. The parameters that are already used in the base model are shown again here, but not changed. Additionally, I introduce a new parameter $\delta$ which represents the difference in body mass between male and female chimpanzees. Like for the other priors, I also use a log-normal distribution to construct $\delta$. This ensures that all values remain positive so as not to jeopardize the assumption of the Poisson distribution and the functioning of the model as a whole. Based on my knowledge of the weight differences between the sexes in humans, I assume that female chimpanzees are on average about 20 % smaller than their male counterparts and that a variation between 10 % and 35 % is realistic.
+
+### Sample
+
+```{r h1 prior sampling, message=F}
+# set parameters for prior sampling (also used later for posterior)
+n <- 10000
+at <- 0:6 / 4
+n_samples <- 100
+
+# sample priors
+prior_sample <- tibble(index = 1:n,
+                 phi = rlnorm(n, meanlog = log(1), sdlog = 0.1),
+                 k = rlnorm(n, meanlog = log(2), sdlog = 0.25),
+                 theta = rlnorm(n, meanlog = log(5), sdlog = 0.25),
+                 delta = rlnorm(n, meanlog = log(0.2), sdlog = 0.2)) # newly added delta parameter
+```
+
+### Plots
+
+```{r h1 prior plotting, warning=F}
+# plot priors for parameters from base model b16.4 (phi, k, and theta)
+prior_sample %>% 
+  pivot_longer(phi:theta) %>% 
+  
+  ggplot(aes(x = value)) +
+  geom_histogram(fill = "#1B9E77", color ="white", bins = 70) +
+  scale_x_continuous("Prior distributions of k, phi, and theta", limits = c(0, NA)) +
+  scale_y_continuous(NULL, breaks = NULL) +
+  facet_wrap(~ name, scales = "free", labeller = label_parsed) +
+  labs(title = "Prior distributions") +
+  theme_ipsum()
+
+# plot prior for new delta parameter
+prior_sample %>% 
+  pivot_longer(delta) %>%
+  
+  ggplot(aes(x = value)) +
+  geom_histogram(fill = "#1B9E77", color ="white", bins = 70) +
+  geom_vline(xintercept = 0, linetype = 2, color = "#D95F02") +
+  annotate(geom = "text",
+           x = -0.01, y = 200, label = "Threshold", angle = 90, 
+           family = "Arial Narrow", color = "#D95F02") +
+  scale_x_continuous("Prior distribution", limits = c(-0.05, NA)) +
+  scale_y_continuous(NULL, breaks = NULL) +
+  labs(title = "Prior distribution of delta") +
+  theme_ipsum()
+```
+
+### Predictive simulation
+
+Similar to the procedure in the book, I also run a predictive simulation based on the specified prior distributions. But now the simulations for body mass and nuts opened per second are differentiated by `sex`.
+
+```{r h1 prior simulation}
+# Simulate draws for body mass and nuts per second by sex
+prior_simulation <- prior_sample %>% 
+  slice_sample(n = n_samples) %>% 
+  mutate(sex_dummy = sample(0:1, n(), replace = T)) %>% 
+  expand(nesting(index, phi, k, theta, delta, sex_dummy),
+         age = seq(from = 0, to = 1.5, length.out = 1e2)) %>% 
+  mutate(bm = (1 - sex_dummy * delta) * (1 - exp(-k * age)), # body mass with sex included
+         ns = phi * (1 - sex_dummy * delta) * (1 - exp(-k * age))^theta) # nuts per second with sex included
+
+# Plot body mass simulations by sex (left panel)
+p1 <-
+  prior_simulation %>% 
+  ggplot(aes(x = age, y = bm, group = index, color = as.factor(sex_dummy))) +
+  geom_line(size = 0.3, alpha = 0.5, show.legend = T) +
+  scale_x_continuous(breaks = at, labels = round(at * max(d$age))) +
+  labs(x = "Age", y ="Body mass") +
+  theme_ipsum() +
+  ylim(0,1.2) +
+  scale_color_manual(name="",labels=c("Male", "Female"), values=c("#D95F02", "#1B9E77")) +
+  theme(legend.position = "bottom")
+
+# Plot nuts per second simulations by sex (right panel)
+p2 <-
+  prior_simulation %>% 
+  ggplot(aes(x = age, y = ns, group = index, color = as.factor(sex_dummy))) +
+  geom_line(size = 0.3, alpha = 0.5, show.legend = T) +
+  scale_x_continuous(breaks = at, labels = round(at * max(d$age))) +
+  labs(x = "Age", y = "Nuts opened per second") +
+  theme_ipsum() +
+  ylim(0,1.2) +
+  scale_color_manual(name="",labels=c("Male", "Female"), values=c("#D95F02", "#1B9E77")) +
+  theme(legend.position = "bottom")
+
+# patchwork of the two plots p1 and p2
+p1 + p2 + 
+  plot_annotation(title = "Prior predictive simulation of nut opening model \nDifferentiated by sex, 100 draws")
+```
+
+The prior predictive simulations show the effect of differentiating by sex in conjunction with the assumptions of the $\delta$ parameter. For body mass (left panel), only the male chimpanzees still reach the boundary value of 1. The prediction curves for the female chimpanzees are close to those of the males in the first years of life, but have a lower slope in the middle years of life and reach saturation around the value of 0.75. When $\phi$ and $\theta$ are also included to convert body mass to nuts opened per second (right panel), the variation inherent in these parameters leads to a weakening of the distinction between the two sexes, which is intentional so as not to constrain the model too much. Nevertheless, the progressions of the curves for the opened nuts per second remain logical and realistic. The cumulative prior assumptions suggest that male chimpanzees are expected to open more nuts on average than female chimpanzees due to their greater strength combined with body mass (right panel: more orange curves at higher values of nuts opened per second than green curves).
+
+## Model (`sex` included)
+
+The adjusted model which includes `sex` is shown below. The additional term interacts as a factor with the other terms. If a chimpanzee is female, the term value is below 1. If a chimpanzee is male, the term value equals 1 and therefore does not affect the model predictions. Thus, in the chosen specification, male chimpanzees are the baseline for the effect of sex.
+
+```{=tex}
+\begin{align*}
+n_i & \sim \operatorname{Poisson}(\lambda_i) \\
+\lambda_i & = \text{seconds}_i \, \phi (1 - \text{female}_i \delta ) (1 - \exp(-k \,\text{age}_i))^\theta \\
+\phi   & \sim \operatorname{Log-Normal}(\log 1, 0.10) \\
+k      & \sim \operatorname{Log-Normal}(\log 2, 0.25) \\
+\theta & \sim \operatorname{Log-Normal}(\log 5, 0.25) \\
+\delta & \sim \operatorname{Log-Normal}(\log 0.25, 0.25)
+\end{align*}
+```
+```{r h1 model}
+b16.4_h1 <- 
+  brm(data = d,
+      family = poisson(link = identity),
+      bf(n ~ seconds * phi * (1 - sex_dummy * delta) * (1 - exp(-k * age_s))^theta,
+         phi + k + theta + delta ~ 1,
+         nl = TRUE),
+      prior = c(prior(lognormal(log(1), 0.1), nlpar = phi, lb = 0),
+                prior(lognormal(log(2), 0.25), nlpar = k, lb = 0),
+                prior(lognormal(log(5), 0.25), nlpar = theta, lb = 0),
+                prior(lognormal(log(0.2), 0.2), nlpar = delta, lb = 0)),
+      iter = 4000, warmup = 2000, chains = 4, cores = 4,
+      seed = 16,
+      file = "fits/b16.04_h1")
+
+plot(b16.4_h1) # the trace plots indicate model convergence
+
+fixef(b16.4_h1) # coefficients summary
+```
+
+The model results for $\delta$ indicate that female chimpanzees have a body mass that is 68% of the average body mass of a male chimpanzee in the sample.
+
+## Posterior
+
+### Samples and predictions
+
+To show the posterior predictions, first samples are drawn:
+
+```{r h1 posterior samples, warning=F}
+post_samples_b16.4_h1 <- posterior_samples(b16.4_h1) %>% # draw posterior samples
+  mutate(iter = 1:n()) %>% 
+  slice_sample(n = n_samples) %>% # show 100 draws
+  expand(nesting(iter, b_phi_Intercept, b_k_Intercept, b_theta_Intercept, b_delta_Intercept), # add b_delta_Intercept
+         age = seq(from = 0, to = 1.5, length.out = 1e2)) %>% 
+  mutate(ns_f = (1 - b_delta_Intercept) * b_phi_Intercept * (1 - exp(-b_k_Intercept * age))^b_theta_Intercept) %>% # for female
+  mutate(ns_m = b_phi_Intercept * (1 - exp(-b_k_Intercept * age))^b_theta_Intercept) # for male
+```
+
+### Plot predictions
+
+The predictions are presented similarly to the predictions for the base model in this book. Only this time, 100 predictions each are shown for male and female chimpanzees:
+
+```{r h1 posterior predictive plot}
+# plot posterior samples
+post_samples_b16.4_h1 %>% 
+  ggplot() +
+  geom_line(aes(x = age, y = ns_f, group = iter), # for female
+            size = 0.2, alpha = 0.3, color = "#1B9E77") +
+  geom_line(aes(x = age, y = ns_m, group = iter), # for male
+            size = 0.2, alpha = 0.3, color = "#D95F02") +
+  geom_jitter(data = d,
+              aes(x = age_s, y = n / seconds, size = seconds, color = sex), # differentiate by sex
+              shape = 1, width = 0.01) +
+  scale_color_brewer(palette = "Dark2", name = "Sex", labels = c("Female", "Male")) +
+  theme_ipsum() +
+  scale_size_continuous(name = "Seconds observed", breaks = c(1, 50, 100), limits = c(1, NA)) +
+  scale_x_continuous(breaks = at, labels = round(at * max(d$age))) +
+  labs(title = "Posterior predictive distribution for the\nnut opening model differentiated by sex",
+       x = "Age in years", y = "Nuts opened per second") +
+  guides(color = guide_legend(reverse = TRUE))
+```
+
+The posterior prediction plot above shows the result for the first task. Since smaller bodies are associated with less strength, which in turn is exponentially related to the number of nuts a chimpanzee can open, the predictions for female chimpanzees are significantly lower than for their male counterparts. While adult males can open between 0.8 and 1 nuts per second according to the model, the values for adult females are around 0.2 to 0.45 nuts per second. At the same time, the diagram also shows that considerably fewer female chimpanzees were observed and also for a shorter time-span (size of the bubbles). An outlier shows that females are theoretically also capable of opening many nuts per second. In addition, the smaller gaps between the points (observations) in the diagram and the lines (predictions) per `sex` show that the model can better represent the data by distinguishing between male and female chimpanzees than the base model. Nevertheless, there is still a fairly large variance that cannot be explained by the model either.
+
+# Exercise 16H2
+
+------------------------------------------------------------------------
+
+**Task:** *Now return to the Panda nut opening model (`b16.4`) and try to incorporate individual differences. There are two parameters,* $\phi$ and $k$, which plausibly vary by individual. Pick one of these, allow it to vary by individual, and use partial pooling to avoid over fitting. The variable `chimpanzee` in `data(Panda_nuts)` tells you which observations belong to which individuals.
+
+------------------------------------------------------------------------
+
+## Model considerations
+
+I choose $\phi$ as the conversion factor from body mass to nut-opening ability as the parameter which I want to let vary by chimpanzee. To recall, the parameter $\phi$ represents the logical chain in which body mass affects strength, and strength in turn affects the ability of chimpanzees to open the panda nuts. It is therefore important that the group-level $\phi$ per individual chimpanzee is also restricted to positive values as there cannot be a negative number of opened nuts.
+
+With this essential lower bound in mind, I run into a problem with the use of `brms`. Currently there is no way in `brms` to specify priors or lower bounds for the linear multilevel terms in a non-linear model, as Bürkner himself confirms.[^2] The reason for this is the "generality of the non-linear framework". So, when specifying the priors in `brms`, I am only able to restrict the overall intercept but not the varying intercepts per chimpanzee. In the following, I first show that the implementation with `brms` due to this issue leads to unreasonable results on the level of the group-level effects. Consequently, I resort to the `ulam` function from the `rethinking` package. With the `ulam` function it is possible to set a lower bound via prior specification also for the group-level intercepts.
+
+[^2]: <https://discourse.mc-stan.org/t/simple-non-linear-multilevel-model-gone-awry/7142>
+
+## Brms model (NOT reasonable)
+
+The following is the model I estimate using `brms`. Specifying priors for the multilevel term $\phi_\text{chimpanzee[i]}$ is currently not supported by `brms` in non-linear models. After running the model exploratively, I adjust the scale of $\phi$ in the non-linear equation by adding `exp()`. Without adjusting the scale so that it involves positive values only, the model does not converge. This procedure is also suggested by Bürckner in the thread cited in the previous paragraph. With the adjustment of the scale, the model does converge, but the group-level effects may still become negative.
+
+```{=tex}
+\begin{align*}
+n_i & \sim \operatorname{Poisson}(\lambda_i) \\
+\lambda_i & = \text{seconds}_i \exp{(\phi_\text{chimpanzee[i]})} (1 - \exp(-k \,\text{age}_i))^\theta \\
+\phi   & \sim \operatorname{Log-Normal}(\log 1, 0.10) \\
+k      & \sim \operatorname{Log-Normal}(\log 2, 0.25) \\
+\theta & \sim \operatorname{Log-Normal}(\log 5, 0.25)
+\end{align*}
+```
+```{r h2 brms}
+b16.4_h2_phi <- 
+  brm(data = d,
+      family = poisson(link = identity),
+      bf(n ~ seconds * exp(phi) * (1 - exp(-k * age_s))^theta,
+         phi ~  1 + (1 | id), # the only option in brms (see https://rdrr.io/cran/brms/f/vignettes/brms_nonlinear.Rmd)
+         k ~ 1, theta ~ 1,
+         nl = TRUE),
+      prior = c(prior(lognormal(log(1), 0.1), nlpar = phi, lb = 0.001),
+                prior(lognormal(log(2), 0.25), nlpar = k, lb = 0.001),
+                prior(lognormal(log(5), 0.25), nlpar = theta, lb = 0.001)),
+      iter = 10000, warmup = 8000, chains = 4, cores = 4,
+      seed = 16,
+      file = "fits/b16.04_h2_phi")
+
+plot(b16.4_h2_phi) # trace plots
+
+b16.4_h2_phi$fit # show group-level intercepts 
+```
+
+The most important thing in the model summary is that all scale-unadjusted `id_phi` are negative at the group level and therefore make no sense within the overarching Poisson model. There cannot be less than zero nuts per open second. A negative factor in the multiplicative model would lead to a negative estimate for the predictive side of the model. Furthermore, although the trace plots show that the model moves towards convergence when the scale of $\phi$ is adjusted to positive values. However, `Rhat` in the model summary is still 1.01 for $\phi$ and `n_eff` remains low.
+
+## Ulam model
+
+As we have seen, `brms` does not allow a prior specification for the group level $\phi$. Therefore, I turn instead to a model estimation based on the function `ulam`, which offers more flexibility in this particular case.
+
+### Priors
+
+For the priors, $\phi$, $k$ and $\theta$, as already used in the previous exercise 16H1, remain the same. However, since the variable `sex` is removed again in this exercise, the parameter $\delta$ is no longer relevant.
+
+In order to use the `ulam` function to partially pool the $\phi$ parameter per chimpanzee, I need to define a new prior. Two conditions must be met by this prior: first, it must also be restricted to positive values to avoid the problem we observed with the `brms` version of the model. And second, it should reflect the assumption that the varying conversion of body mass to nut opening ability is largely between the values 0 and 4. This range is my personal assumption about reasonable variation between individual chimpanzees.
+
+To maintain positive values only, I again rely on a log-normal prior distribution (1; 0.5). In addition, the use of this log-normal prior has the advantage that a large part of the distribution is amassed around the value of 1 and at the same time the defined range between 0 and 4 is well covered, with some individuals being much better in nut-oping than the average chimpanzee.
+
+```{r h2 priors}
+x_id_prior <- tibble( x = rlnorm(n, meanlog = log(1), sdlog = 0.5))
+
+x_id_prior %>% 
+  ggplot(aes(x = x)) +
+  geom_histogram(fill = "#1B9E77", color ="white", bins = 70) +
+  geom_vline(xintercept = 0, linetype = 2, color = "#D95F02") +
+  annotate(geom = "text",
+           x = -0.15, y = 200, label = "Threshold", angle = 90, 
+           family = "Arial Narrow", color = "#D95F02") +
+  scale_x_continuous("Prior distribution", limits = c(-0.2, NA)) +
+  scale_y_continuous(NULL, breaks = NULL) +
+  theme_ipsum() +
+  labs(subtitle = "Prior distribution of varying group-level intercepts x[id]",
+       x = "Prior distribution", y = "")
+```
+
+### Model
+
+```{r h2 load ulam fits, include = F}
+# load external fit objects
+m16.4 <- readRDS("ulam_fits/m16.4.rds")
+m16.4_h2_phi <- readRDS("ulam_fits/m16.4_h2_v1.gz")
+#m16.4_h2_v2 <- readRDS("ulam_fits/m16.4_h2_v2.gz")
+```
+
+To use the `ulam` function, I first define a `dat_list` from the data. Then, I construct the model. As a reference point from the book, I used the partial pooling example in Chapter 13 (`m13.4`).
+
+```{r h2 ulam model, eval = F}
+# Prepare data list
+dat_list <- list(
+  n = as.integer(d$nuts_opened),
+  age = d$age / max(d$age),
+  seconds = d$seconds,
+  id = d$chimpanzee
+  )
+
+# Run model
+m16.4_h2_phi <- ulam(
+  alist(
+    n ~ poisson(lambda),
+    lambda <- seconds * (phi * x[id]) * (1 - exp(-k * age))^theta,
+    phi ~ lognormal(log(1), 0.1),
+    k ~ lognormal(log(2), 0.25),
+    theta ~ lognormal(log(5), 0.25),
+    x[id] ~ lognormal(log(1), 0.5)
+  ),
+  data = dat_list, 
+  chains = 4, cores = 4, iter = 8000, 
+  log_lik = T, # for model comparison
+  control = list(adapt_delta = 0.99) # STAN target acceptance rate, reduce step size to avoid divergent transitions
+)
+```
+
+```{r h2 summary}
+precis(m16.4_h2_phi, depth=2)
+```
+
+The model summary shows that the model has converged. If I understand the book Chapter 13 correctly, the reported model results are the non-centered ones, which would also have been the default results of a `brms` model. Most importantly, with the prior specification for the multilevel term, none of the group-level intercepts become negative. And the wide range of different effects per individual chimpanzee confirms the original assumption: some chimpanzees are much better at opening panda nuts than their conspecifics, whose characteristics in terms of body mass may be very similar. This central result of varying posteriors is also shown graphically in the following sub-section.
+
+### Posterior
+
+```{r h2 posterior}
+### Model summary
+
+# extract posterior samples
+posterior_samples <- extract.samples(m16.4_h2_phi, pars = "x") # create posterior samples
+posterior_samples <- as.data.frame(posterior_samples) # convert to data frame
+names(posterior_samples)[1:ncol(posterior_samples)]<- paste0("Chimpanzee", " ",1:22) # rename columns
+
+mcmc_intervals(posterior_samples) +
+  theme_ipsum() +
+  labs(title = "Differences for the conversion from body mass to\nnumber of nuts opened per individual chimpanzee",
+       x = "Posterior distribution", y = "") +
+  geom_vline(xintercept = 1, linetype = 2, color = "#D95F02") +  # average
+  geom_vline(xintercept = 0, linetype = 1, color = "#D95F02") # lower bound
+```
+
+The above diagram graphically reflects the results of the model. The conversion of body mass to opened nuts varies greatly between chimpanzees. While most chimpanzees have a factor of less than 1, some chimpanzees have very high individual $\phi$ values, with the highest mean value being around 4.
+
+The mapping of these diverging conversion factors with a simultaneous convergence of the overall model already hints that this model also has a better fit than the base model. To confirm this first assessment, the following and final section of the term paper performs a model comparison for the two exercises (16H1/2) based on WAIC/PSIS-LOO.
+
+# Model comparison
+
+## 16H1: Base model vs. Model including `sex`
+
+### Visual evidence
+
+To begin with, for the first exercise 16H1, I turn to the `bayesplot` package for posterior predictive checking. The plots below compare the observed outcome variable (green line) with simulated data sets from the posterior predictive distribution (orange lines). The plots show that the predicted simulations are much closer to the actual outcome for the adjusted model that differentiates by sex (`b16.4_h1`) than for the base model (`b16.4`).
+
+```{r, comvergence diagnostics}
+pp_check_b16.4 <- pp_check(b16.4) + labs(subtitle = "b16.4 (brms)") + scale_color_brewer(palette = "Dark2") + legend_none()
+pp_check_b16.4_h1 <- pp_check(b16.4_h1) + labs(subtitle = "b16.4_h1 (brms)") + scale_color_brewer(palette = "Dark2") + legend_none()
+
+bayesplot_grid(pp_check_b16.4, pp_check_b16.4_h1, 
+               grid_args = list(ncol = 1))
+```
+
+### WAIC/PSIS-LOO
+
+```{r comparison_h1}
+# add LOO and PSIS-LOO to b16.4 and b16.4_hi
+b16.4 <- add_criterion(b16.4, c("loo", "waic"))
+b16.4_h1 <- add_criterion(b16.4_h1, c("loo", "waic"))
+
+loo_compare(b16.4, b16.4_h1, criterion = "loo") %>% print(simplify = T) # since the results are the same when using WAIC as a criterion, I only report the PSIS-LOO results
+```
+
+This is also confirmed by the WAIC and PSIS-LOO comparison between the two models. Since both criteria produce the same results, only the PSIS-LOO criterion is reported above. The adjusted model, which includes the variable `sex`, has a better predictive power than the base model. The `elpd_diff` between the two models is more than twice as large as the `se_diff`. This means that the enhanced model fit is unambiguous.
+
+## 16H2: Base model vs. Model with partial pooling for $\phi$
+
+Since I used the function `ulam` for the second exercise, I cannot use the same functions as for the previous model comparison. Instead, I re-estimate the base model by also using the `ulam` function in the background (`m16.4`), so that I can then apply the `compare` function from the `rethinking` package. The function `compare` only features the WAIC criterion, but not the PSIS-LOO criterion. Therefore, I only provide the WAIC results.
+
+```{r comparison_h2}
+compare(m16.4, m16.4_h2_phi, WAIC = T)
+```
+
+In the second exercise, the results of the model comparison speak even more strongly in favor of the adjustment than in the first exercise. The difference in WAIC is about 300, while the standard error of this difference is about 80. This means that here too the evidence is clear that the partial pooling model `m16.4_h2_phi` has a significantly better fit than the base model `m16.4`.
+
+# Session Info {.unnumbered}
+
+```{r session_info}
+sessionInfo()
+```
